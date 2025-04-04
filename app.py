@@ -6,6 +6,23 @@ from flask_cors import CORS
 import traceback
 import os
 from werkzeug.utils import secure_filename
+import sys
+import subprocess
+
+requirements = [
+    "Flask",
+    "ultralytics",
+    "opencv-python",
+    "numpy",
+    "Flask-CORS",
+    "Werkzeug",
+]
+
+# Only install pywin32 on Windows
+if sys.platform == "win32":
+    requirements.append("pywin32")
+
+subprocess.run(["pip", "install"] + requirements)
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})  # Enable CORS with more specific configuration
