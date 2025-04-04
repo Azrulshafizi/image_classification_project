@@ -1,0 +1,165 @@
+
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            color: #333;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .tab-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .tab {
+            background-color: #f8f9fa;
+            color: #2c3e50;
+            padding: 10px 20px;
+            cursor: pointer;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            border-radius: 5px 5px 0 0;
+            margin: 0 5px;
+        }
+        .tab.active {
+            background-color: #3498db;
+            color: white;
+        }
+        .content-container {
+            border: 1px solid #ddd;
+            border-radius: 0 5px 5px 5px;
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        /* Upload styles */
+        .upload-container {
+            border: 2px dashed #3498db;
+            border-radius: 10px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 20px;
+            background-color: #fff;
+        }
+        #drop-area {
+            padding: 40px 20px;
+            cursor: pointer;
+        }
+        #drop-area.highlight {
+            background-color: #e3f2fd;
+        }
+        #file-input {
+            display: none;
+        }
+        /* Camera styles */
+        #videoContainer {
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto 20px auto;
+            position: relative;
+        }
+        #video {
+            width: 100%;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #000;
+        }
+        #canvas {
+            display: none;
+        }
+        /* Common styles */
+        .button {
+            background-color: #3498db;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        .button:hover {
+            background-color: #2980b9;
+        }
+        .button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            margin: 15px 0;
+            flex-wrap: wrap;
+        }
+        #preview {
+            max-width: 100%;
+            max-height: 400px;
+            margin: 20px auto;
+            display: none;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 20px;
+            border-radius: 5px;
+            background-color: #fff;
+            display: none;
+        }
+        .detection-box {
+            position: absolute;
+            border: 2px solid #3498db;
+            background-color: rgba(52, 152, 219, 0.2);
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        .detection-label {
+            background-color: #3498db;
+            color: white;
+            padding: 2px 6px;
+            font-size: 12px;
+            position: absolute;
+            top: -20px;
+            left: 0;
+        }
+        #image-container {
+            position: relative;
+            display: inline-block;
+            margin: 0 auto;
+            text-align: center;
+            width: 100%;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 2s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 14px;
+            color: #7f8c8d;
+        }

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YOLO Object Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <h1>YOLO Object Detection</h1>
+    
+    <div class="tab-container">
+        <div class="tab active" data-tab="upload">Image Upload</div>
+        <div class="tab" data-tab="camera">Camera</div>
+    </div>
+    
+    <div class="content-container">
+        <!-- Upload Tab Content -->
+        <div class="tab-content active" id="upload-content">
+            <div class="upload-container">
+                <div id="drop-area">
+                    <p>Drag & drop an image here or click to select a file</p>
+                    <input type="file" id="file-input" accept="image/*">
+                    <button class="button" id="upload-button">Select Image</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Camera Tab Content -->
+        <div class="tab-content" id="camera-content">
+            <div id="videoContainer">
+                <video id="video" autoplay playsinline></video>
+            </div>
+            <div class="controls">
+                <button id="startCamera" class="button">Start Camera</button>
+                <button id="captureImage" class="button" disabled>Capture Image</button>
+                <button id="switchCamera" class="button" disabled>Switch Camera</button>
+            </div>
+        </div>
+        
+        <!-- Common Results Section -->
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Processing image...</p>
+        </div>
+        
+        <div id="image-container">
+            <img id="preview" src="" alt="Preview">
+            <canvas id="canvas" style="display:none;"></canvas>
+        </div>
+        
+        <div class="controls">
+            <button id="detectObjects" class="button" disabled>Detect Objects</button>
+            <button id="clearResults" class="button" disabled>Clear Results</button>
+        </div>
+        
+        <div id="results">
+            <h2>Detection Results:</h2>
+            <div id="detection-info"></div>
+        </div>
+    </div>
+    
+    <div class="footer">
+        <p>Powered by YOLOv8 and Flask</p>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

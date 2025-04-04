@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h1>Real-Time YOLO Object Detection</h1>
+    
+    <div class="camera-container">
+        <video id="videoElement" autoplay playsinline></video>
+        <canvas id="canvasElement"></canvas>
+        
+        <div class="controls">
+            <button id="startButton" class="btn">Start Detection</button>
+            <button id="stopButton" class="btn" disabled>Stop Detection</button>
+        </div>
+        
+        <div class="detection-stats">
+            <span id="fpsCounter">FPS: --</span>
+            <span id="objectsCounter">Objects: --</span>
+        </div>
+    </div>
+    
+    <div class="results-container">
+        <h2>Live Detection Results</h2>
+        <div id="resultsElement"></div>
+    </div>
+    <script src="{{ url_for('static', filename='js/live.js') }}"></script>
+</div>
+
+
+{% endblock %}

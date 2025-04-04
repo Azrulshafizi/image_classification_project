@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Object Detection</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        #videoContainer {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        
+        #video {
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        
+        #canvas {
+            display: none;
+        }
+        
+        #capturedImage {
+            max-width: 100%;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            margin: 20px 0;
+            display: none;
+        }
+        
+        .button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        
+        .red {
+            background-color: #f44336;
+        }
+        
+        #result {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            min-height: 100px;
+            width: 100%;
+        }
+        
+        .bounding-box {
+            position: absolute;
+            border: 2px solid #00ff00;
+            background-color: rgba(0, 255, 0, 0.1);
+            pointer-events: none;
+        }
+        
+        .class-label {
+            position: absolute;
+            top: -20px;
+            left: 0;
+            background-color: #00ff00;
+            color: white;
+            padding: 2px 6px;
+            font-size: 12px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Camera Object Detection</h1>
+        
+        <div id="videoContainer">
+            <video id="video" width="640" height="480" autoplay></video>
+        </div>
+        
+        <div>
+            <button id="startCamera" class="button">Start Camera</button>
+            <button id="captureImage" class="button" disabled>Capture Image</button>
+            <button id="detectObjects" class="button" disabled>Detect Objects</button>
+        </div>
+        
+        <canvas id="canvas"></canvas>
+        <img id="capturedImage" alt="Captured Image">
+        
+        <div id="result">
+            <p>Capture an image and detect objects to see results here.</p>
+        </div>
+    </div>
+    
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const capturedImage = document.getElementById('capturedImage');
+        const startCameraBtn = document.getElementById('startCamera');
+        const captureImageBtn = document.getElementById('captureImage');
+        const detectObjectsBtn = document.getElementById('detectObjects');
+        const resultDiv = document.getElementById('result');
+        const videoContainer = document.getElementById('videoContainer');
+        
+        let stream = null;
+        
+        // Start camera
+        startCameraBtn.addEventListener('click', async () => {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'environment',
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    } 
+                });
+                video.srcObject = stream;
+                startCameraBtn.textContent = "Restart Camera";
+                captureImageBtn.disabled = false;
+                
+                // Clear previous results
+                resultDiv.innerHTML = "<p>Camera started. Capture an image to detect objects.</p>";
+                capturedImage.style.display = "none";
+                removeAllBoundingBoxes();
+                
+            } catch (err) {
+                console.error("Error accessing camera:", err);
+                resultDiv.innerHTML = `<p>Error accessing camera: ${err.message}</p>`;
+            }
+        });
+        
+        // Capture image
+        captureImageBtn.addEventListener('click', () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            capturedImage.src = canvas.toDataURL('image/jpeg');
+            capturedImage.style.display = "block";
+            detectObjectsBtn.disabled = false;
+            
+            resultDiv.innerHTML = "<p>Image captured. Click 'Detect Objects' to analyze.</p>";
+            
+            // Remove any existing bounding boxes
+            removeAllBoundingBoxes();
+        });
+        
+        // Detect objects
+        detectObjectsBtn.addEventListener('click', async () => {
+            try {
+                resultDiv.innerHTML = "<p>Processing image...</p>";
+                
+                // Convert canvas image to blob
+                canvas.toBlob(async (blob) => {
+                    const formData = new FormData();
+                    formData.append("image", blob, "capture.jpg");
+                    
+                    try {
+                        const response = await fetch('/predict', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (data.error) {
+                            resultDiv.innerHTML = `<p>Error: ${data.error}</p>`;
+                            return;
+                        }
+                        
+                        displayResults(data);
+                    } catch (err) {
+                        resultDiv.innerHTML = `<p>Error submitting image: ${err.message}</p>`;
+                    }
+                }, 'image/jpeg', 0.9);
+            } catch (err) {
+                resultDiv.innerHTML = `<p>Error processing image: ${err.message}</p>`;
+            }
+        });
+        
+        // Display detection results
+        function displayResults(data) {
+            // COCO class names (first 80 common objects detected by YOLOv8)
+            const classNames = [
+                'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+                'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+                'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+                'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+                'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+                'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+                'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+                'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+                'hair drier', 'toothbrush'
+            ];
+            
+            // Remove any existing bounding boxes
+            removeAllBoundingBoxes();
+            
+            if (!data.predictions || data.predictions.length === 0) {
+                resultDiv.innerHTML = "<p>No objects detected in the image.</p>";
+                return;
+            }
+            
+            // Create a table for results
+            let tableHTML = `
+                <h3>Detected Objects: ${data.predictions.length}</h3>
+                <table border="1" style="border-collapse: collapse; width: 100%;">
+                    <tr>
+                        <th>Class</th>
+                        <th>Confidence</th>
+                    </tr>
+            `;
+            
+            // Display each detection
+            data.predictions.forEach(pred => {
+                const className = classNames[pred.class] || `Class ${pred.class}`;
+                const confidence = (pred.confidence * 100).toFixed(2);
+                
+                // Add to table
+                tableHTML += `
+                    <tr>
+                        <td>${className}</td>
+                        <td>${confidence}%</td>
+                    </tr>
+                `;
+                
+                // Draw bounding box
+                drawBoundingBox(pred.bbox, className, confidence);
+            });
+            
+            tableHTML += "</table>";
+            resultDiv.innerHTML = tableHTML;
+        }
+        
+        // Draw bounding box on the image
+        function drawBoundingBox(bbox, className, confidence) {
+            // Get image dimensions
+            const imgWidth = capturedImage.width;
+            const imgHeight = capturedImage.height;
+            
+            // Get display dimensions (the actual rendered size)
+            const displayWidth = capturedImage.clientWidth;
+            const displayHeight = capturedImage.clientHeight;
+            
+            // Calculate scale factors
+            const scaleX = displayWidth / imgWidth;
+            const scaleY = displayHeight / imgHeight;
+            
+            // Scale bounding box coordinates
+            const [x1, y1, x2, y2] = bbox;
+            const scaledX1 = x1 * scaleX;
+            const scaledY1 = y1 * scaleY;
+            const scaledWidth = (x2 - x1) * scaleX;
+            const scaledHeight = (y2 - y1) * scaleY;
+            
+            // Create bounding box element
+            const box = document.createElement('div');
+            box.className = 'bounding-box';
+            box.style.left = `${capturedImage.offsetLeft + scaledX1}px`;
+            box.style.top = `${capturedImage.offsetTop + scaledY1}px`;
+            box.style.width = `${scaledWidth}px`;
+            box.style.height = `${scaledHeight}px`;
+            
+            // Create label
+            const label = document.createElement('div');
+            label.className = 'class-label';
+            label.textContent = `${className} (${confidence}%)`;
+            box.appendChild(label);
+            
+            // Add to container
+            document.body.appendChild(box);
+        }
+        
+        // Remove all bounding boxes
+        function removeAllBoundingBoxes() {
+            const boxes = document.querySelectorAll('.bounding-box');
+            boxes.forEach(box => box.remove());
+        }
+    </script>
+</body>
+</html>
