@@ -7,6 +7,7 @@ import traceback
 from werkzeug.utils import secure_filename
 import gc
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

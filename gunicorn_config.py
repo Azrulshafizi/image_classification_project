@@ -1,5 +1,5 @@
 # gunicorn_config.py
-
+import os
 # Use only a single worker to minimize memory usage
 workers = 1
 
