@@ -1,31 +1,19 @@
 from flask import Flask, render_template, request, jsonify
-from ultralytics import YOLO
+from flask_cors import CORS
 import cv2
 import numpy as np
-from flask_cors import CORS
-import traceback
 import os
+import traceback
 from werkzeug.utils import secure_filename
-import sys
-import subprocess
+import gc
+import logging
 
-requirements = [
-    "Flask",
-    "ultralytics",
-    "opencv-python",
-    "numpy",
-    "Flask-CORS",
-    "Werkzeug",
-]
-
-# Only install pywin32 on Windows
-if sys.platform == "win32":
-    requirements.append("pywin32")
-
-subprocess.run(["pip", "install"] + requirements)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # Enable CORS with more specific configuration
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Configure upload folder
 UPLOAD_FOLDER = 'uploads'
@@ -34,13 +22,23 @@ if not os.path.exists(UPLOAD_FOLDER):
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload size
 
-# Load YOLO Model
-try:
-    model = YOLO("yolov10n.pt")  # Path to saved model
-    print("YOLO model loaded successfully")
-except Exception as e:
-    print(f"Error loading YOLO model: {str(e)}")
-    model = None
+# Global variable for model
+_model = None
+
+def get_model():
+    """Lazy-load YOLO model only when needed"""
+    global _model
+    if _model is None:
+        logger.info("Loading YOLO model...")
+        try:
+            # Import heavy libraries only when needed
+            from ultralytics import YOLO
+            _model = YOLO("yolov10n.pt")
+            logger.info("YOLO model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading YOLO model: {str(e)}")
+            _model = None
+    return _model
 
 @app.route("/", methods=["GET"])
 def home():
@@ -49,7 +47,8 @@ def home():
 @app.route("/health", methods=["GET"])
 def health_check():
     """Simple endpoint to check if the server is running"""
-    return jsonify({"status": "ok", "model_loaded": model is not None})
+    # Don't load model on health check to save memory
+    return jsonify({"status": "ok"})
 
 @app.route("/live", methods=["GET"])
 def live_detection():
@@ -59,10 +58,6 @@ def live_detection():
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        # Check if model is loaded
-        if model is None:
-            return jsonify({"error": "Model not loaded. Check server logs."}), 500
-            
         # Check if image exists in request
         if "image" not in request.files:
             return jsonify({"error": "No image uploaded"}), 400
@@ -77,7 +72,7 @@ def predict():
         if not ('.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in allowed_extensions):
             return jsonify({"error": "File type not allowed"}), 400
         
-        # Save file temporarily to debug image loading issues
+        # Save file temporarily
         try:
             filename = secure_filename(file.filename)
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -92,9 +87,24 @@ def predict():
         except Exception as save_error:
             return jsonify({"error": f"Error saving or reading image: {str(save_error)}"}), 400
 
-        # Perform YOLO prediction
+        # Load model and perform prediction
         try:
+            # Get model (lazy loading)
+            model = get_model()
+            
+            # Check if model is loaded
+            if model is None:
+                return jsonify({"error": "Model not loaded. Check server logs."}), 500
+            
+            # Log memory usage before prediction
+            log_memory_usage("Before prediction")
+            
+            # Perform YOLO prediction
             results = model(image)
+            
+            # Log memory usage after prediction
+            log_memory_usage("After prediction")
+            
             if results is None or len(results) == 0:
                 return jsonify({"predictions": []}), 200
                 
@@ -110,28 +120,40 @@ def predict():
                     confidence = float(box.conf[0])  # Confidence score
                     predictions.append({"class": class_id, "confidence": confidence, "bbox": [x1, y1, x2, y2]})
                 except Exception as box_error:
-                    print(f"Error processing detection box: {str(box_error)}")
+                    logger.error(f"Error processing detection box: {str(box_error)}")
                     continue
 
             # Clean up the temporary file
             if os.path.exists(filepath):
                 os.remove(filepath)
                 
+            # Force garbage collection after processing
+            gc.collect()
+            
             return jsonify({"predictions": predictions})
             
         except Exception as model_error:
             error_details = traceback.format_exc()
-            print(f"Error during object detection: {str(model_error)}")
-            print(error_details)
+            logger.error(f"Error during object detection: {str(model_error)}")
+            logger.error(error_details)
             return jsonify({"error": f"Error during object detection: {str(model_error)}"}), 500
         
     except Exception as e:
         error_details = traceback.format_exc()
-        print(f"Unexpected error: {str(e)}")
-        print(error_details)
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(error_details)
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
+def log_memory_usage(tag=""):
+    """Log current memory usage"""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        mb = process.memory_info().rss / 1024 / 1024
+        logger.info(f"Memory usage {tag}: {mb:.2f} MB")
+    except ImportError:
+        logger.info(f"Memory usage {tag}: psutil not available")
 
 if __name__ == "__main__":
     # Use 0.0.0.0 to listen on all interfaces
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
