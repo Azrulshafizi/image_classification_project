@@ -35,6 +35,7 @@ def get_model():
             # Import heavy libraries only when needed
             from ultralytics import YOLO
             _model = YOLO("yolov10n.pt")
+            
             logger.info("YOLO model loaded successfully")
         except Exception as e:
             logger.error(f"Error loading YOLO model: {str(e)}")
@@ -101,7 +102,7 @@ def predict():
             log_memory_usage("Before prediction")
             
             # Perform YOLO prediction
-            results = model(image)
+            results = model(image, device="cpu")
             
             # Log memory usage after prediction
             log_memory_usage("After prediction")
