@@ -57,6 +57,95 @@ def live_detection():
     """Live real-time object detection with YOLO"""
     return render_template("live_camera.html")
 
+# @app.route("/predict", methods=["POST"])
+# def predict():
+#     try:
+#         # Check if image exists in request
+#         if "image" not in request.files:
+#             return jsonify({"error": "No image uploaded"}), 400
+
+#         # Read image from request
+#         file = request.files["image"]
+#         if file.filename == '':
+#             return jsonify({"error": "No file selected"}), 400
+            
+#         # Check if the file is an allowed image type
+#         allowed_extensions = {'png', 'jpg', 'jpeg', 'bmp'}
+#         if not ('.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in allowed_extensions):
+#             return jsonify({"error": "File type not allowed"}), 400
+        
+#         # Save file temporarily
+#         try:
+#             filename = secure_filename(file.filename)
+#             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+#             file.save(filepath)
+            
+#             # Read image with OpenCV
+#             image = cv2.imread(filepath)
+            
+#             if image is None:
+#                 return jsonify({"error": "Could not decode image after saving"}), 400
+                
+#         except Exception as save_error:
+#             return jsonify({"error": f"Error saving or reading image: {str(save_error)}"}), 400
+
+#         # Load model and perform prediction
+#         try:
+#             # Get model (lazy loading)
+#             model = get_model()
+            
+#             # Check if model is loaded
+#             if model is None:
+#                 return jsonify({"error": "Model not loaded. Check server logs."}), 500
+            
+#             # Log memory usage before prediction
+#             log_memory_usage("Before prediction")
+            
+#             # Perform YOLO prediction
+#             results = model(image, device="cpu")
+            
+#             # Log memory usage after prediction
+#             log_memory_usage("After prediction")
+            
+#             if results is None or len(results) == 0:
+#                 return jsonify({"predictions": []}), 200
+                
+#             detections = results[0].boxes  # Get detected objects
+
+#             # Format results
+#             predictions = []
+#             for box in detections:
+#                 try:
+#                     x1, y1, x2, y2 = map(float, box.xyxy[0])  # Convert to float first
+#                     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)  # Then convert to int
+#                     class_id = int(box.cls[0])  # Class ID
+#                     confidence = float(box.conf[0])  # Confidence score
+#                     predictions.append({"class": class_id, "confidence": confidence, "bbox": [x1, y1, x2, y2]})
+#                 except Exception as box_error:
+#                     logger.error(f"Error processing detection box: {str(box_error)}")
+#                     continue
+
+#             # Clean up the temporary file
+#             if os.path.exists(filepath):
+#                 os.remove(filepath)
+                
+#             # Force garbage collection after processing
+#             gc.collect()
+            
+#             return jsonify({"predictions": predictions})
+            
+#         except Exception as model_error:
+#             error_details = traceback.format_exc()
+#             logger.error(f"Error during object detection: {str(model_error)}")
+#             logger.error(error_details)
+#             return jsonify({"error": f"Error during object detection: {str(model_error)}"}), 500
+        
+#     except Exception as e:
+#         error_details = traceback.format_exc()
+#         logger.error(f"Unexpected error: {str(e)}")
+#         logger.error(error_details)
+#         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
@@ -86,6 +175,15 @@ def predict():
             if image is None:
                 return jsonify({"error": "Could not decode image after saving"}), 400
                 
+            # RESIZE IMAGE BEFORE PROCESSING - This will speed up inference
+            max_size = 640  # Standard YOLO input size
+            h, w = image.shape[:2]
+            scale = max_size / max(h, w)
+            if scale < 1:  # Only resize if the image is larger than max_size
+                new_w, new_h = int(w * scale), int(h * scale)
+                logger.info(f"Resizing image from {w}x{h} to {new_w}x{new_h}")
+                image = cv2.resize(image, (new_w, new_h))
+                
         except Exception as save_error:
             return jsonify({"error": f"Error saving or reading image: {str(save_error)}"}), 400
 
@@ -101,8 +199,8 @@ def predict():
             # Log memory usage before prediction
             log_memory_usage("Before prediction")
             
-            # Perform YOLO prediction
-            results = model(image, device="cpu")
+            # Perform YOLO prediction with higher confidence threshold to reduce processing time
+            results = model(image, device="cpu", conf=0.25)  # Increased confidence threshold
             
             # Log memory usage after prediction
             log_memory_usage("After prediction")
@@ -117,6 +215,11 @@ def predict():
             for box in detections:
                 try:
                     x1, y1, x2, y2 = map(float, box.xyxy[0])  # Convert to float first
+                    
+                    # If image was resized, adjust bounding box coordinates back to original scale
+                    if scale < 1:
+                        x1, y1, x2, y2 = x1/scale, y1/scale, x2/scale, y2/scale
+                        
                     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)  # Then convert to int
                     class_id = int(box.cls[0])  # Class ID
                     confidence = float(box.conf[0])  # Confidence score
