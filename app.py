@@ -34,7 +34,7 @@ def get_model():
         try:
             # Import heavy libraries only when needed
             from ultralytics import YOLO
-            _model = YOLO("yolov10n.pt")
+            _model = YOLO("yolov8n.pt")
             
             logger.info("YOLO model loaded successfully")
         except Exception as e:
