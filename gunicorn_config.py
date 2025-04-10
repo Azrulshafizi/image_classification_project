@@ -1,37 +1,72 @@
-# gunicorn_config.py
+# gunicorn_config.py - Configuration for Gunicorn WSGI server
+
 import os
-# Use only a single worker to minimize memory usage
-workers = 1
+import multiprocessing
 
-# Use threads instead of additional processes
-threads = 2
+# Server socket configuration
+bind = "0.0.0.0:" + os.environ.get("PORT", "5000")
 
-# Use thread-based worker
-worker_class = 'gthread'
+# Worker processes
+# For CPU-bound applications like YOLO, best to use 1 worker on Render free tier
+workers = int(os.environ.get("WEB_CONCURRENCY", 1))
 
-# Increase timeout for model loading and prediction (in seconds)
-timeout = 300
+# Timeout for worker processes (in seconds)
+# This needs to be high enough for YOLO inference to complete
+timeout = 120
 
-# Restart workers periodically to help with memory management
-max_requests = 10
-max_requests_jitter = 3
+# Worker class - use sync for CPU-intensive tasks
+worker_class = "sync"
 
-# Preload app to ensure model is loaded at startup rather than on first request
-preload_app = False  # Set to False to lazy load the model
+# Adjust threads per worker - less is better for CPU-intensive work
+threads = 1
 
-# Log level
-loglevel = 'info'
+# Max requests before worker restart - helps prevent memory leaks
+max_requests = 100
+max_requests_jitter = 10
 
-# Bind to port from environment variable or default to 8080
-bind = "0.0.0.0:" + os.environ.get("PORT", "8080")
+# Logging
+accesslog = "-"  # Output to stdout
+errorlog = "-"   # Output to stderr
+loglevel = "info"
 
-# Print memory usage on startup
+# Limit request line to prevent DoS
+limit_request_line = 4094
+
+# Preload application - reduces memory usage
+preload_app = True
+
+# Initialize application - runs before workers are forked
 def on_starting(server):
+    print("Gunicorn server is starting...")
+
+# Pre-fork worker
+def pre_fork(server, worker):
+    # Perform any pre-fork tasks like model initialization
+    pass
+
+# Post-fork worker
+def post_fork(server, worker):
+    # Import only here to prevent memory issues during fork
     try:
-        import psutil
-        import os
-        process = psutil.Process(os.getpid())
-        mb = process.memory_info().rss / 1024 / 1024
-        print(f"[Gunicorn] Initial memory usage: {mb:.2f} MB")
+        import gc
+        # Aggressive garbage collection
+        gc.collect()
     except ImportError:
-        print("[Gunicorn] Could not log memory (psutil not available)")
+        pass
+
+# Worker exit - clean up resources
+def worker_exit(server, worker):
+    try:
+        import gc
+        import torch
+        # Clean up CUDA memory if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        # Force garbage collection
+        gc.collect()
+    except ImportError:
+        pass
+
+# Pre-execution hooks - before processing a request
+def pre_request(worker, req):
+    worker.start_time = worker.age
