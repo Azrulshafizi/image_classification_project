@@ -44,7 +44,7 @@ executor = ThreadPoolExecutor(max_workers=2)
 _model = None
 
 def get_model():
-    """Lazy-load YOLO model only when needed"""
+    """Lazy-load YOLO model with TensorRT optimization for T4 GPUs"""
     global _model
     if _model is None:
         logger.info(f"Loading YOLO model from {MODEL_PATH}...")
@@ -52,23 +52,72 @@ def get_model():
             # Import heavy libraries only when needed
             from ultralytics import YOLO
             start_time = time.time()
+            
+            # Load the base model
             _model = YOLO(MODEL_PATH)
-            load_time = time.time() - start_time
-            logger.info(f"YOLO model loaded successfully in {load_time:.2f} seconds")
             
             # Check for GPU availability
+            device = "cpu"
+            gpu_available = False
             try:
                 import torch
-                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                gpu_available = torch.cuda.is_available()
+                device = "cuda:0" if gpu_available else "cpu"
                 logger.info(f"Using device: {device}")
-                if device == "cpu":
+                
+                # Optimize for T4 GPU if available
+                if gpu_available:
+                    gpu_name = torch.cuda.get_device_name(0)
+                    logger.info(f"GPU detected: {gpu_name}")
+                    
+                    # Check if it's a T4 or similar NVIDIA GPU
+                    if 'T4' in gpu_name or 'NVIDIA' in gpu_name:
+                        logger.info("T4 GPU detected - applying specific optimizations")
+                        
+                        # Enable TensorRT if available
+                        try:
+                            import tensorrt
+                            logger.info(f"TensorRT version: {tensorrt.__version__}")
+                            
+                            # Export to TensorRT format for maximum speed
+                            trt_model_path = f"{os.path.splitext(MODEL_PATH)[0]}_trt.engine"
+                            
+                            # Only convert if engine doesn't already exist
+                            if not os.path.exists(trt_model_path):
+                                logger.info(f"Converting model to TensorRT format: {trt_model_path}")
+                                _model.export(format='engine', half=True, device=0)
+                                logger.info("TensorRT conversion complete")
+                            else:
+                                logger.info(f"Using existing TensorRT engine: {trt_model_path}")
+                                _model = YOLO(trt_model_path)
+                                
+                        except (ImportError, Exception) as e:
+                            logger.warning(f"TensorRT optimization failed: {str(e)}. Using standard model.")
+                    
+                    # Set torch settings for optimal T4 performance
+                    torch.backends.cudnn.benchmark = True
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
+                    
+                    # Warm up the GPU
+                    dummy_input = torch.zeros((1, 3, TARGET_SIZE, TARGET_SIZE), device=device).half()
+                    for _ in range(2):  # Run 2 warm-up inferences
+                        with torch.no_grad():
+                            _model(dummy_input)
+                    torch.cuda.synchronize()
+                    
+                else:
                     logger.info("No GPU available. Detection will be slower.")
             except ImportError:
                 logger.info("PyTorch not properly installed. Using CPU only.")
                 
+            load_time = time.time() - start_time
+            logger.info(f"YOLO model loaded successfully in {load_time:.2f} seconds")
+            
         except Exception as e:
             logger.error(f"Error loading YOLO model: {str(e)}")
             _model = None
+            
     return _model
 
 def compress_image(image, quality=75):
@@ -77,8 +126,9 @@ def compress_image(image, quality=75):
     result, encimg = cv2.imencode('.jpg', image, encode_param)
     return cv2.imdecode(encimg, 1)
 
-def process_image(filepath):
-    """Process image for prediction - can be run in a thread"""
+# Optimized image preprocessing with CUDA pinned memory
+def process_image_optimized(filepath, use_cuda=False):
+    """Process image for prediction with CUDA optimization"""
     try:
         # Read image with OpenCV
         image = cv2.imread(filepath)
@@ -97,8 +147,25 @@ def process_image(filepath):
         if max(h, w) > TARGET_SIZE:
             new_w, new_h = int(w * scale), int(h * scale)
             image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # If using CUDA, convert to tensor with optimal memory layout
+        if use_cuda:
+            # Import torch only when needed
+            import torch
             
-        return image, scale, (h, w)
+            # Convert to RGB (from BGR)
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # Convert to tensor with pinned memory for faster GPU transfer
+            image_tensor = torch.from_numpy(image_rgb).permute(2, 0, 1).contiguous()
+            image_tensor = image_tensor.float().div(255.0)
+            
+            # Use pinned memory for faster host-to-device transfer
+            image_tensor = image_tensor.pin_memory()
+            
+            return image_tensor, scale, (h, w)
+        else:
+            return image, scale, (h, w)
         
     except Exception as e:
         logger.error(f"Error processing image: {str(e)}")
@@ -116,6 +183,21 @@ def cleanup_resources():
     
     # Force garbage collection
     gc.collect()
+
+def get_memory_usage():
+    """Get current memory usage"""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        mb = process.memory_info().rss / 1024 / 1024
+        return f"{mb:.2f} MB"
+    except ImportError:
+        return "psutil not available"
+
+def log_memory_usage(tag=""):
+    """Log current memory usage"""
+    memory = get_memory_usage()
+    logger.info(f"Memory usage {tag}: {memory}")
 
 @app.before_request
 def before_request():
@@ -156,16 +238,39 @@ def warmup():
     status = "ready" if model is not None else "error"
     
     try:
+        # Check for GPU availability
+        use_cuda = False
+        try:
+            import torch
+            use_cuda = torch.cuda.is_available()
+        except ImportError:
+            pass
+            
         # Create a small test image and run inference to warm up the model
-        test_image = np.zeros((TARGET_SIZE, TARGET_SIZE, 3), dtype=np.uint8)
-        if model is not None:
-            # Use a low confidence to avoid any actual computation
-            model(test_image, conf=0.01, max_det=1)
+        if use_cuda:
+            import torch
+            from torch.cuda import nvtx
+            
+            nvtx.range_push("Warmup")
+            dummy_input = torch.zeros((1, 3, TARGET_SIZE, TARGET_SIZE), device="cuda:0").half()
+            
+            if model is not None:
+                with torch.cuda.amp.autocast():
+                    with torch.no_grad():
+                        model(dummy_input, conf=0.01, max_det=1)
+                        
+            torch.cuda.synchronize()
+            nvtx.range_pop()
+        else:
+            test_image = np.zeros((TARGET_SIZE, TARGET_SIZE, 3), dtype=np.uint8)
+            if model is not None:
+                model(test_image, conf=0.01, max_det=1)
         
         return jsonify({
             "status": status,
             "model_loaded": model is not None,
             "timestamp": time.time(),
+            "device": "cuda" if use_cuda else "cpu",
             "memory": get_memory_usage()
         })
     except Exception as e:
@@ -194,7 +299,7 @@ def predict():
         if file.filename == '':
             return jsonify({"error": "No file selected"}), 400
             
-        # Check if the file is an allowed image type
+        # Check file extension
         allowed_extensions = {'png', 'jpg', 'jpeg', 'bmp', 'webp'}
         if not ('.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in allowed_extensions):
             return jsonify({"error": "File type not allowed"}), 400
@@ -204,12 +309,29 @@ def predict():
             filename = secure_filename(file.filename)
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
-            logger.info(f"Image saved to {filepath}")
             
-            # Process image (resize, compress)
-            image, scale, original_size = process_image(filepath)
+            # Check for GPU availability
+            use_cuda = False
+            try:
+                import torch
+                use_cuda = torch.cuda.is_available()
+            except ImportError:
+                pass
+                
+            # Process image with optimized function
+            if use_cuda:
+                # Import needed for NVTX markers
+                from torch.cuda import nvtx
+                # Mark start of preprocessing with NVTX marker (for profiling)
+                nvtx.range_push("Preprocessing")
             
-            if image is None:
+            # Process image
+            image_data, scale, original_size = process_image_optimized(filepath, use_cuda)
+            
+            if use_cuda:
+                nvtx.range_pop()  # End preprocessing marker
+                
+            if image_data is None:
                 return jsonify({"error": "Could not decode image"}), 400
                 
         except Exception as save_error:
@@ -224,40 +346,50 @@ def predict():
             if model is None:
                 return jsonify({"error": "Model not loaded. Check server logs."}), 500
             
-            # Check for GPU availability
-            device = "cpu"
-            try:
-                import torch
-                device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                pass
-            
             # Log processing time
             preprocess_time = time.time() - start_time
-            logger.info(f"Preprocessing completed in {preprocess_time:.4f} seconds")
-            
-            # Log memory usage before prediction
-            log_memory_usage("Before prediction")
             
             # Start timing inference
             inference_start = time.time()
             
-            # Perform YOLO prediction with optimized parameters
-            results = model(
-                image, 
-                device=device,
-                conf=CONFIDENCE_THRESHOLD,
-                iou=IOU_THRESHOLD,
-                half=True,  # Use half precision (FP16) for faster inference
-                max_det=MAX_DETECTIONS
-            )
+            # Use CUDA events for more accurate timing if available
+            if use_cuda:
+                from torch.cuda import nvtx
+                nvtx.range_push("Model inference")
+                
+                # Pre-allocate GPU memory for the result
+                import torch
+                with torch.cuda.amp.autocast():
+                    with torch.no_grad():
+                        # Move data to device
+                        if isinstance(image_data, torch.Tensor):
+                            image_data = image_data.to("cuda:0", non_blocking=True)
+                        
+                        # Perform YOLO prediction with optimized parameters
+                        results = model(
+                            image_data, 
+                            conf=CONFIDENCE_THRESHOLD,
+                            iou=IOU_THRESHOLD,
+                            half=True,  # Use half precision (FP16) for T4 Tensor Cores
+                            max_det=MAX_DETECTIONS
+                        )
+                        
+                # Ensure inference is complete
+                torch.cuda.synchronize()
+                nvtx.range_pop()
+            else:
+                # CPU inference
+                results = model(
+                    image_data, 
+                    conf=CONFIDENCE_THRESHOLD,
+                    iou=IOU_THRESHOLD,
+                    half=False,  # Don't use half precision for CPU
+                    max_det=MAX_DETECTIONS
+                )
             
             # Calculate inference time
             inference_time = time.time() - inference_start
             logger.info(f"Inference completed in {inference_time:.4f} seconds")
-            
-            # Log memory usage after prediction
-            log_memory_usage("After prediction")
             
             if results is None or len(results) == 0:
                 # Clean up the temporary file
@@ -303,6 +435,11 @@ def predict():
             # Calculate total processing time
             total_time = time.time() - start_time
             
+            # Aggressive memory cleanup for T4
+            if use_cuda:
+                import torch
+                torch.cuda.empty_cache()
+                
             # Return results with timing information
             return jsonify({
                 "predictions": predictions,
@@ -313,8 +450,12 @@ def predict():
                 },
                 "image_info": {
                     "original_size": [original_w, original_h],
-                    "processed_size": [image.shape[1], image.shape[0]]
-                }
+                    "processed_size": [
+                        image_data.shape[2] if isinstance(image_data, torch.Tensor) else image_data.shape[1],
+                        image_data.shape[1] if isinstance(image_data, torch.Tensor) else image_data.shape[0]
+                    ]
+                },
+                "device": "cuda" if use_cuda else "cpu"
             })
             
         except Exception as model_error:
@@ -329,8 +470,8 @@ def predict():
         logger.error(error_details)
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
-@app.route("/predict_batch", methods=["POST"])
-def predict_batch():
+@app.route("/predict_batch_optimized", methods=["POST"])
+def predict_batch_optimized():
     start_time = time.time()
     try:
         # Check if images exist in request
@@ -342,14 +483,32 @@ def predict_batch():
         if not files or len(files) == 0:
             return jsonify({"error": "No files selected"}), 400
             
+        # Check for GPU availability
+        use_cuda = False
+        try:
+            import torch
+            use_cuda = torch.cuda.is_available()
+        except ImportError:
+            pass
+            
         # Process each image
         batch_results = []
-        image_batch = []
         filepaths = []
         scales = []
         original_sizes = []
         valid_indices = []
         
+        # Start NVTX range for preprocessing
+        if use_cuda:
+            from torch.cuda import nvtx
+            nvtx.range_push("Batch preprocessing")
+            
+        # Create tensors list for batching
+        if use_cuda:
+            tensor_list = []
+        else:
+            image_batch = []
+            
         for i, file in enumerate(files):
             # Check if the file is an allowed image type
             allowed_extensions = {'png', 'jpg', 'jpeg', 'bmp', 'webp'}
@@ -363,14 +522,17 @@ def predict_batch():
                 file.save(filepath)
                 filepaths.append(filepath)
                 
-                # Process image in thread
-                future = executor.submit(process_image, filepath)
-                image, scale, original_size = future.result()
+                # Process image with optimized function
+                image_data, scale, original_size = process_image_optimized(filepath, use_cuda)
                 
-                if image is None:
+                if image_data is None:
                     continue  # Skip invalid images
                     
-                image_batch.append(image)
+                if use_cuda:
+                    tensor_list.append(image_data)
+                else:
+                    image_batch.append(image_data)
+                    
                 scales.append(scale)
                 original_sizes.append(original_size)
                 valid_indices.append(i)
@@ -380,7 +542,7 @@ def predict_batch():
                 continue
         
         # If no valid images were found, return an error
-        if not image_batch:
+        if (use_cuda and not tensor_list) or (not use_cuda and not image_batch):
             return jsonify({"error": "No valid images found in the batch"}), 400
             
         # Get model
@@ -388,28 +550,67 @@ def predict_batch():
         if model is None:
             return jsonify({"error": "Model not loaded. Check server logs."}), 500
             
-        # Check for GPU availability
-        device = "cpu"
-        try:
+        # Create batch tensor for CUDA
+        if use_cuda:
             import torch
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            pass
-        
-        # Log preprocessing time
-        preprocess_time = time.time() - start_time
-        logger.info(f"Batch preprocessing completed in {preprocess_time:.4f} seconds")
-        
-        # Perform batch prediction
-        inference_start = time.time()
-        results = model(
-            image_batch, 
-            device=device,
-            conf=CONFIDENCE_THRESHOLD,
-            iou=IOU_THRESHOLD,
-            half=True,
-            max_det=MAX_DETECTIONS
-        )
+            from torch.cuda import nvtx
+            
+            # End preprocessing range
+            nvtx.range_pop()
+            
+            # Create batch by padding to same size
+            batch_size = len(tensor_list)
+            
+            # Find maximum dimensions in the batch
+            max_h = max([t.shape[1] for t in tensor_list])
+            max_w = max([t.shape[2] for t in tensor_list])
+            
+            # Create a batch tensor with padding
+            batch_tensor = torch.zeros((batch_size, 3, max_h, max_w), dtype=tensor_list[0].dtype)
+            
+            # Fill the batch tensor
+            for i, tensor in enumerate(tensor_list):
+                h, w = tensor.shape[1], tensor.shape[2]
+                batch_tensor[i, :, :h, :w] = tensor
+                
+            # Move batch to GPU
+            batch_tensor = batch_tensor.to("cuda:0", non_blocking=True)
+            
+            # Log preprocessing time
+            preprocess_time = time.time() - start_time
+            logger.info(f"Batch preprocessing completed in {preprocess_time:.4f} seconds")
+            
+            # Start NVTX range for batch inference
+            nvtx.range_push("Batch inference")
+            
+            # Perform batch inference
+            inference_start = time.time()
+            with torch.cuda.amp.autocast():
+                with torch.no_grad():
+                    results = model(
+                        batch_tensor,
+                        conf=CONFIDENCE_THRESHOLD,
+                        iou=IOU_THRESHOLD,
+                        half=True,
+                        max_det=MAX_DETECTIONS
+                    )
+                    
+            # Ensure inference is complete
+            torch.cuda.synchronize()
+            nvtx.range_pop()  # End batch inference range
+            
+        else:
+            # CPU batch processing
+            preprocess_time = time.time() - start_time
+            inference_start = time.time()
+            results = model(
+                image_batch,
+                conf=CONFIDENCE_THRESHOLD,
+                iou=IOU_THRESHOLD,
+                half=False,
+                max_det=MAX_DETECTIONS
+            )
+            
         inference_time = time.time() - inference_start
         logger.info(f"Batch inference completed in {inference_time:.4f} seconds")
         
@@ -455,7 +656,10 @@ def predict_batch():
                 "predictions": predictions,
                 "image_info": {
                     "original_size": [original_w, original_h],
-                    "processed_size": [image_batch[i].shape[1], image_batch[i].shape[0]]
+                    "processed_size": [
+                        tensor_list[i].shape[2] if use_cuda else image_batch[i].shape[1],
+                        tensor_list[i].shape[1] if use_cuda else image_batch[i].shape[0]
+                    ]
                 }
             })
         
@@ -464,6 +668,11 @@ def predict_batch():
             if os.path.exists(filepath):
                 os.remove(filepath)
         
+        # Aggressive memory cleanup for T4
+        if use_cuda:
+            import torch
+            torch.cuda.empty_cache()
+            
         # Calculate total processing time
         total_time = time.time() - start_time
         
@@ -474,7 +683,8 @@ def predict_batch():
                 "inference": inference_time,
                 "total": total_time
             },
-            "batch_size": len(image_batch)
+            "device": "cuda" if use_cuda else "cpu",
+            "batch_size": len(valid_indices)
         })
         
     except Exception as e:
@@ -497,34 +707,25 @@ def get_class_names():
     else:
         return jsonify({"error": "Class names not available"}), 404
 
-def get_memory_usage():
-    """Get current memory usage"""
-    try:
-        import psutil
-        process = psutil.Process(os.getpid())
-        mb = process.memory_info().rss / 1024 / 1024
-        return f"{mb:.2f} MB"
-    except ImportError:
-        return "psutil not available"
-
-def log_memory_usage(tag=""):
-    """Log current memory usage"""
-    memory = get_memory_usage()
-    logger.info(f"Memory usage {tag}: {memory}")
-
 if __name__ == "__main__":
     # Check for GPU support on startup and print info
     try:
         import torch
         if torch.cuda.is_available():
-            logger.info(f"GPU available: {torch.cuda.get_device_name(0)}")
+            gpu_name = torch.cuda.get_device_name(0)
+            logger.info(f"GPU available: {gpu_name}")
+            
             # Pre-warm the GPU by allocating a small tensor
             torch.cuda.empty_cache()
             dummy = torch.zeros(1).cuda()
             del dummy
+            
             # Set environment variables for better CUDA performance
             os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
             os.environ['OMP_NUM_THREADS'] = '1'
+            
+            # Configure environment for maximum TensorRT compatibility
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
         else:
             logger.info("No GPU available, using CPU")
     except:
