@@ -100,10 +100,13 @@ def get_model():
                     torch.backends.cudnn.allow_tf32 = True
                     
                     # Warm up the GPU
-                    dummy_input = torch.zeros((1, 3, TARGET_SIZE, TARGET_SIZE), device=device).half()
-                    for _ in range(2):  # Run 2 warm-up inferences
-                        with torch.no_grad():
-                            _model(dummy_input)
+                    dummy_input = torch.zeros((1, 3, TARGET_SIZE, TARGET_SIZE), device="cuda").half()
+                    with torch.cuda.amp.autocast():
+                        _model(dummy_input)  # Warmup
+                    # dummy_input = torch.zeros((1, 3, TARGET_SIZE, TARGET_SIZE), device=device).half()
+                    # for _ in range(2):  # Run 2 warm-up inferences
+                    #     with torch.no_grad():
+                    #         _model(dummy_input)
                     torch.cuda.synchronize()
                     
                 else:
